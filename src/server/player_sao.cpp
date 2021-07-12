@@ -167,7 +167,6 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 			if (m_breath == 0) {
 				PlayerHPChangeReason reason(PlayerHPChangeReason::DROWNING);
 				setHP(m_hp - c.drowning, reason);
-				m_env->getGameDef()->SendPlayerHPOrDie(this, reason);
 			}
 		}
 	}
@@ -216,7 +215,6 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 			s32 newhp = (s32)m_hp - (s32)damage_per_second;
 			PlayerHPChangeReason reason(PlayerHPChangeReason::NODE_DAMAGE, nodename);
 			setHP(newhp, reason);
-			m_env->getGameDef()->SendPlayerHPOrDie(this, reason);
 		}
 	}
 
@@ -226,6 +224,16 @@ void PlayerSAO::step(float dtime, bool send_recommended)
 		// create message and add to list
 		m_messages_out.emplace(getId(), true, str);
 		m_env->getScriptIface()->player_event(this, "properties_changed");
+	}
+
+	// Death messages must be handled outside of callbacks
+	// to ensure proper return value handling from Lua
+	if (m_death_reason) {
+		if (isDead())
+			m_env->getGameDef()->SendPlayerHPOrDie(this, *m_death_reason);
+
+		delete m_death_reason;
+		m_death_reason = nullptr;
 	}
 
 	// If attached, check that our parent is still there. If it isn't, detach.
@@ -491,6 +499,12 @@ void PlayerSAO::setHP(s32 hp, const PlayerHPChangeReason &reason)
 	// Update properties on death
 	if ((hp == 0) != (oldhp == 0))
 		m_properties_sent = false;
+
+	// Send normal HP updates instantly, but delay death messages
+	if (hp > 0)
+		m_env->getGameDef()->SendPlayerHPOrDie(this, reason);
+	else if (!m_death_reason)
+		m_death_reason = new PlayerHPChangeReason(reason);
 }
 
 void PlayerSAO::setBreath(const u16 breath, bool send)
