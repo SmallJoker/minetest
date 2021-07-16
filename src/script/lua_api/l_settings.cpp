@@ -105,9 +105,13 @@ int LuaSettings::l_get(lua_State* L)
 	LuaSettings* o = checkobject(L, 1);
 
 	std::string key = std::string(luaL_checkstring(L, 2));
-	if (o->m_settings->exists(key)) {
-		std::string value = o->m_settings->get(key);
+	Settings *group = nullptr;
+	std::string value;
+
+	if (o->m_settings->getNoEx(key, value)) {
 		lua_pushstring(L, value.c_str());
+	} else if (o->m_settings->getGroupNoEx(key, group)) {
+		LuaSettings::create(L, group, "");
 	} else {
 		lua_pushnil(L);
 	}
@@ -185,12 +189,29 @@ int LuaSettings::l_set(lua_State* L)
 	LuaSettings* o = checkobject(L, 1);
 
 	std::string key = std::string(luaL_checkstring(L, 2));
-	const char* value = luaL_checkstring(L, 3);
-
 	CHECK_SETTING_SECURITY(L, key);
 
-	if (!o->m_settings->set(key, value))
-		throw LuaError("Invalid sequence found in setting parameters");
+	const char *value = nullptr;
+	LuaSettings *group = nullptr;
+	
+	if (lua_isstring(L, 3)) {
+		value = lua_tostring(L, 3);
+
+		if (!o->m_settings->set(key, value))
+			throw LuaError("Invalid sequence found in setting parameters");
+	} else {
+		group = checkobject(L, 3);
+
+		if (!group->m_filename.empty())
+			throw LuaError("Cannot use a file-based Settings object as group value");
+		if (!o->m_settings->setGroup(key, *group->m_settings))
+			throw LuaError("Invalid sequence found in setting parameters");
+
+		// Update references so that setter operations can be used as intended
+		delete group->m_settings;
+		group->m_is_own_settings = false;
+		group->m_settings = o->m_settings->getGroup(key);
+	}
 
 	return 0;
 }
@@ -267,6 +288,12 @@ int LuaSettings::l_write(lua_State* L)
 {
 	NO_MAP_LOCK_REQUIRED;
 	LuaSettings* o = checkobject(L, 1);
+
+	if (o->m_filename.empty()) {
+		// Group Settings values must be written by their parent object
+		lua_pushboolean(L, false);
+		return 1;
+	}
 
 	if (!o->m_write_allowed) {
 		throw LuaError("Settings: writing " + o->m_filename +
@@ -346,9 +373,16 @@ void LuaSettings::Register(lua_State* L)
 int LuaSettings::create_object(lua_State* L)
 {
 	NO_MAP_LOCK_REQUIRED;
+
 	bool write_allowed = true;
-	const char* filename = luaL_checkstring(L, 1);
-	CHECK_SECURE_PATH_POSSIBLE_WRITE(L, filename, &write_allowed);
+	std::string filename;
+	if (lua_isstring(L, 1)) {
+		filename = lua_tostring(L, 1);
+		CHECK_SECURE_PATH_POSSIBLE_WRITE(L, filename.c_str(), &write_allowed);
+	} else if (!lua_isnoneornil(L, 1)) {
+		throw LuaError("Expected file name string or nil");
+	}
+
 	LuaSettings* o = new LuaSettings(filename, write_allowed);
 	*(void **)(lua_newuserdata(L, sizeof(void *))) = o;
 	luaL_getmetatable(L, className);

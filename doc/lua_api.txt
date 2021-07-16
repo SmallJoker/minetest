@@ -6904,7 +6904,10 @@ It can be created via `Settings(filename)`.
 
 ### Methods
 
-* `get(key)`: returns a value
+* `get(key)`
+    * Returns `nil` if `key` is not found
+    * Returns `string` for normal settings
+    * Returns `Settings` if the value is a group (nested Settings)
 * `get_bool(key, [default])`: returns a boolean
     * `default` is the value returned if `key` is not found.
     * Returns `nil` if `key` is not found and `default` not specified.
@@ -6927,6 +6930,7 @@ It can be created via `Settings(filename)`.
 * `get_names()`: returns `{key1,...}`
 * `write()`: returns a boolean (`true` for success)
     * Writes changes to file.
+    * Returns `false` and does nothing when the object is a Settings group
 * `to_table()`: returns `{[key1]=value1,...}`
 
 ### Format
