@@ -172,6 +172,7 @@ void CGUIEnvironment::drawAll(bool useScreenSize)
 
 	draw();
 	OnPostRender(os::Timer::getTime());
+	Driver->drawBatchQueue();
 
 	clearDeletionQueue();
 }

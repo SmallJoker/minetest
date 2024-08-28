@@ -20,10 +20,55 @@
 
 #include "mt_opengl.h"
 
+#include "CMeshBuffer.h"
+
 namespace irr
 {
 namespace video
 {
+
+static float batch_z = -1.0f;
+
+struct GLBatchData {
+	static const size_t EPT_MAX = scene::EPT_POINT_SPRITES + 1;
+
+	S3DVertex *addVertices(u16 n, size_t *index)
+	{
+		if (n == 0)
+			return nullptr;
+
+		const size_t size_prev = buf.Vertices.size();
+		if (size_prev + n > buf.Vertices.capacity())
+			buf.Vertices.reserve((size_prev + n) * 2);
+
+		if (index)
+			*index = size_prev;
+
+		// Cut off if abs(z) > 2.0
+		batch_z -= 0.01f;
+
+		buf.Vertices.resize(size_prev + n);
+		return &buf.Vertices[size_prev];
+	}
+
+	u16 *addIndices(u16 n)
+	{
+		if (n == 0)
+			return nullptr;
+
+		const size_t size_prev = buf.Indices.size();
+		if (size_prev + n > buf.Indices.capacity())
+			buf.Indices.reserve((size_prev + n) * 2);
+
+		buf.Indices.resize(size_prev + n);
+		return &buf.Indices[size_prev];
+	}
+
+	scene::SMeshBuffer buf;
+	bool have_alpha = false;
+};
+
+static std::vector<GLBatchData> batch_array;
 
 // Statics variables
 const u16 COpenGLDriver::Quad2DIndices[4] = {0, 1, 2, 3};
@@ -52,12 +97,14 @@ bool COpenGLDriver::initDriver()
 	extGlSwapInterval(Params.Vsync ? 1 : 0);
 #endif
 
+	batch_array.resize(GLBatchData::EPT_MAX);
 	return true;
 }
 
 //! destructor
 COpenGLDriver::~COpenGLDriver()
 {
+	batch_array.clear();
 	deleteMaterialRenders();
 
 	CacheHandler->getTextureCache().clear();
@@ -1031,6 +1078,50 @@ void COpenGLDriver::draw2DVertexPrimitiveList(const void *vertices, u32 vertexCo
 	}
 }
 
+void COpenGLDriver::drawBatchQueue()
+{
+	setRenderStates2DMode(true, false, false);
+
+	const bool HAVE_BRGA = FeatureAvailable[IRR_ARB_vertex_array_bgra]
+		|| FeatureAvailable[IRR_EXT_vertex_array_bgra];
+	const GLint COLOR_SIZE = (
+#ifdef GL_BGRA
+		HAVE_BRGA ? GL_BGRA :
+#endif
+		4);
+
+	for (GLBatchData &bd : batch_array) {
+		if (bd.buf.getVertexCount() == 0)
+			continue;
+
+		// similar to draw2DVertexPrimitiveList but much simpler
+
+		glVertexPointer(3, GL_FLOAT, sizeof(S3DVertex), &bd.buf.Vertices[0].Pos);
+		//glTexCoordPointer(2, GL_FLOAT, sizeof(S3DVertex), &bd.buf.Vertices[0].TCoords);
+
+		CacheHandler->setClientState(true, false, true, false);
+
+		if (HAVE_BRGA) {
+			glColorPointer(COLOR_SIZE, GL_UNSIGNED_BYTE, sizeof(S3DVertex), &bd.buf.Vertices[0].Color);
+		} else {
+			getColorBuffer(&bd.buf.Vertices[0], bd.buf.getVertexCount(), EVT_STANDARD);
+			glColorPointer(COLOR_SIZE, GL_UNSIGNED_BYTE, 0, &ColorBuffer[0]);
+		}
+
+		//glScissor
+		//glBindTexture
+		glDrawElements(GL_TRIANGLES, bd.buf.getIndexCount(),
+			sizeof(bd.buf.Indices[0]) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
+			&bd.buf.Indices[0]);
+
+		// Do not free memory for faster allocation of the next batch
+		bd.buf.Vertices.clear();
+		bd.buf.Indices.clear();
+		bd.have_alpha = false;
+	}
+	batch_z = -1.0f;
+}
+
 void COpenGLDriver::draw2DImage(const video::ITexture *texture, const core::position2d<s32> &destPos,
 		const core::rect<s32> &sourceRect, const core::rect<s32> *clipRect, SColor color,
 		bool useAlphaChannelOfTexture)
@@ -1437,20 +1528,7 @@ void COpenGLDriver::draw2DImageBatch(const video::ITexture *texture,
 void COpenGLDriver::draw2DRectangle(SColor color, const core::rect<s32> &position,
 		const core::rect<s32> *clip)
 {
-	disableTextures();
-	setRenderStates2DMode(color.getAlpha() < 255, false, false);
-
-	core::rect<s32> pos = position;
-
-	if (clip)
-		pos.clipAgainst(*clip);
-
-	if (!pos.isValid())
-		return;
-
-	glColor4ub(color.getRed(), color.getGreen(), color.getBlue(), color.getAlpha());
-	glRectf(GLfloat(pos.UpperLeftCorner.X), GLfloat(pos.UpperLeftCorner.Y),
-			GLfloat(pos.LowerRightCorner.X), GLfloat(pos.LowerRightCorner.Y));
+	draw2DRectangle(position, color, color, color, color, clip);
 }
 
 //! draw an 2d rectangle
@@ -1466,44 +1544,38 @@ void COpenGLDriver::draw2DRectangle(const core::rect<s32> &position,
 	if (!pos.isValid())
 		return;
 
-	disableTextures();
+	auto &bd = batch_array[scene::EPT_TRIANGLES];
+	size_t index;
+	S3DVertex *v = bd.addVertices(4, &index);
+	v[0].Color = colorLeftUp;
+	v[1].Color = colorRightUp;
+	v[2].Color = colorRightDown;
+	v[3].Color = colorLeftDown;
 
-	setRenderStates2DMode(colorLeftUp.getAlpha() < 255 ||
-								  colorRightUp.getAlpha() < 255 ||
-								  colorLeftDown.getAlpha() < 255 ||
-								  colorRightDown.getAlpha() < 255,
-			false, false);
+	/*
+		0---1
+		| \ |
+		3---2
+	*/
+	v[0].Pos = { (f32)pos.UpperLeftCorner.X,  (f32)pos.UpperLeftCorner.Y,  batch_z };
+	v[1].Pos = { (f32)pos.LowerRightCorner.X, (f32)pos.UpperLeftCorner.Y,  batch_z };
+	v[2].Pos = { (f32)pos.LowerRightCorner.X, (f32)pos.LowerRightCorner.Y, batch_z };
+	v[3].Pos = { (f32)pos.UpperLeftCorner.X,  (f32)pos.LowerRightCorner.Y, batch_z };
 
-	Quad2DVertices[0].Color = colorLeftUp;
-	Quad2DVertices[1].Color = colorRightUp;
-	Quad2DVertices[2].Color = colorRightDown;
-	Quad2DVertices[3].Color = colorLeftDown;
+	u16 *idx = bd.addIndices(6);
 
-	Quad2DVertices[0].Pos = core::vector3df((f32)pos.UpperLeftCorner.X, (f32)pos.UpperLeftCorner.Y, 0.0f);
-	Quad2DVertices[1].Pos = core::vector3df((f32)pos.LowerRightCorner.X, (f32)pos.UpperLeftCorner.Y, 0.0f);
-	Quad2DVertices[2].Pos = core::vector3df((f32)pos.LowerRightCorner.X, (f32)pos.LowerRightCorner.Y, 0.0f);
-	Quad2DVertices[3].Pos = core::vector3df((f32)pos.UpperLeftCorner.X, (f32)pos.LowerRightCorner.Y, 0.0f);
+	idx[0] = 0 + index;
+	idx[1] = 1 + index;
+	idx[2] = 2 + index;
+	idx[3] = 0 + index;
+	idx[4] = 2 + index;
+	idx[5] = 3 + index;
 
-	if (!FeatureAvailable[IRR_ARB_vertex_array_bgra] && !FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		getColorBuffer(Quad2DVertices, 4, EVT_STANDARD);
-
-	CacheHandler->setClientState(true, false, true, false);
-
-	glVertexPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Pos);
-
-#ifdef GL_BGRA
-	const GLint colorSize = (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra]) ? GL_BGRA : 4;
-#else
-	const GLint colorSize = 4;
-#endif
-	if (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Color);
-	else {
-		_IRR_DEBUG_BREAK_IF(ColorBuffer.size() == 0);
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, 0, &ColorBuffer[0]);
-	}
-
-	glDrawElements(GL_TRIANGLE_FAN, 4, GL_UNSIGNED_SHORT, Quad2DIndices);
+	bd.have_alpha = bd.have_alpha ||
+		colorLeftUp.getAlpha() < 255 ||
+		colorRightUp.getAlpha() < 255 ||
+		colorLeftDown.getAlpha() < 255 ||
+		colorRightDown.getAlpha() < 255;
 }
 
 //! Draws a 2d line.
