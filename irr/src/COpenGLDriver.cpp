@@ -21,17 +21,16 @@
 #include "mt_opengl.h"
 
 #include "CMeshBuffer.h"
+#include <map>
 
 namespace irr
 {
 namespace video
 {
 
-static float batch_z = -1.0f;
+static float batch_z = 0.0f;
 
 struct GLBatchData {
-	static const size_t EPT_MAX = scene::EPT_POINT_SPRITES + 1;
-
 	S3DVertex *addVertices(u16 n, size_t *index)
 	{
 		if (n == 0)
@@ -45,7 +44,7 @@ struct GLBatchData {
 			*index = size_prev;
 
 		// Cut off if abs(z) > 2.0
-		batch_z -= 0.01f;
+		batch_z -= 0.1f;
 
 		buf.Vertices.resize(size_prev + n);
 		return &buf.Vertices[size_prev];
@@ -64,11 +63,24 @@ struct GLBatchData {
 		return &buf.Indices[size_prev];
 	}
 
+	// Clockwise rect, needs 4 vertices starting from `index`
+	void addIndicesForCWRect(size_t index)
+	{
+		u16 *idx = addIndices(6);
+
+		idx[0] = 0 + index;
+		idx[1] = 1 + index;
+		idx[2] = 2 + index;
+		idx[3] = 0 + index;
+		idx[4] = 2 + index;
+		idx[5] = 3 + index;
+	}
+
 	scene::SMeshBuffer buf;
 	bool have_alpha = false;
 };
 
-static std::vector<GLBatchData> batch_array;
+static std::map<const video::ITexture *, GLBatchData> batch_array;
 
 // Statics variables
 const u16 COpenGLDriver::Quad2DIndices[4] = {0, 1, 2, 3};
@@ -96,8 +108,6 @@ bool COpenGLDriver::initDriver()
 #if defined(_IRR_COMPILE_WITH_WINDOWS_DEVICE_) || defined(_IRR_COMPILE_WITH_X11_DEVICE_)
 	extGlSwapInterval(Params.Vsync ? 1 : 0);
 #endif
-
-	batch_array.resize(GLBatchData::EPT_MAX);
 	return true;
 }
 
@@ -1080,8 +1090,6 @@ void COpenGLDriver::draw2DVertexPrimitiveList(const void *vertices, u32 vertexCo
 
 void COpenGLDriver::drawBatchQueue()
 {
-	setRenderStates2DMode(true, false, false);
-
 	const bool HAVE_BRGA = FeatureAvailable[IRR_ARB_vertex_array_bgra]
 		|| FeatureAvailable[IRR_EXT_vertex_array_bgra];
 	const GLint COLOR_SIZE = (
@@ -1090,16 +1098,29 @@ void COpenGLDriver::drawBatchQueue()
 #endif
 		4);
 
-	for (GLBatchData &bd : batch_array) {
+	//clearZBuffer();
+
+
+	for (auto &[texture, bd] : batch_array) {
 		if (bd.buf.getVertexCount() == 0)
 			continue;
 
+		if (texture) {
+			disableTextures(1);
+			if (!CacheHandler->getTextureCache().set(0, texture))
+				continue;
+			setRenderStates2DMode(bd.have_alpha, true, bd.have_alpha);
+		} else {
+			disableTextures();
+			setRenderStates2DMode(bd.have_alpha, false, false);
+		}
 		// similar to draw2DVertexPrimitiveList but much simpler
 
 		glVertexPointer(3, GL_FLOAT, sizeof(S3DVertex), &bd.buf.Vertices[0].Pos);
-		//glTexCoordPointer(2, GL_FLOAT, sizeof(S3DVertex), &bd.buf.Vertices[0].TCoords);
+		if (texture)
+			glTexCoordPointer(2, GL_FLOAT, sizeof(S3DVertex), &bd.buf.Vertices[0].TCoords);
 
-		CacheHandler->setClientState(true, false, true, false);
+		CacheHandler->setClientState(true, false, true, !!texture);
 
 		if (HAVE_BRGA) {
 			glColorPointer(COLOR_SIZE, GL_UNSIGNED_BYTE, sizeof(S3DVertex), &bd.buf.Vertices[0].Color);
@@ -1109,17 +1130,14 @@ void COpenGLDriver::drawBatchQueue()
 		}
 
 		//glScissor
-		//glBindTexture
 		glDrawElements(GL_TRIANGLES, bd.buf.getIndexCount(),
 			sizeof(bd.buf.Indices[0]) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT,
 			&bd.buf.Indices[0]);
-
-		// Do not free memory for faster allocation of the next batch
-		bd.buf.Vertices.clear();
-		bd.buf.Indices.clear();
-		bd.have_alpha = false;
 	}
-	batch_z = -1.0f;
+
+
+	batch_array.clear();
+	batch_z = 0.0f;
 }
 
 void COpenGLDriver::draw2DImage(const video::ITexture *texture, const core::position2d<s32> &destPos,
@@ -1132,74 +1150,13 @@ void COpenGLDriver::draw2DImage(const video::ITexture *texture, const core::posi
 	if (!sourceRect.isValid())
 		return;
 
-	// clip these coordinates
 	core::rect<s32> targetRect(destPos, sourceRect.getSize());
-	if (clipRect) {
-		targetRect.clipAgainst(*clipRect);
-		if (targetRect.getWidth() < 0 || targetRect.getHeight() < 0)
-			return;
-	}
 
-	const core::dimension2d<u32> &renderTargetSize = getCurrentRenderTargetSize();
-	targetRect.clipAgainst(core::rect<s32>(0, 0, (s32)renderTargetSize.Width, (s32)renderTargetSize.Height));
-	if (targetRect.getWidth() < 0 || targetRect.getHeight() < 0)
-		return;
+	const SColor colors[4] = {
+		color, color, color, color
+	};
 
-	// ok, we've clipped everything.
-	// now draw it.
-	const core::dimension2d<s32> sourceSize(targetRect.getSize());
-	const core::position2d<s32> sourcePos(sourceRect.UpperLeftCorner + (targetRect.UpperLeftCorner - destPos));
-
-	const core::dimension2d<u32> &ss = texture->getOriginalSize();
-	const f32 invW = 1.f / static_cast<f32>(ss.Width);
-	const f32 invH = 1.f / static_cast<f32>(ss.Height);
-	const core::rect<f32> tcoords(
-			sourcePos.X * invW,
-			sourcePos.Y * invH,
-			(sourcePos.X + sourceSize.Width) * invW,
-			(sourcePos.Y + sourceSize.Height) * invH);
-
-	disableTextures(1);
-	if (!CacheHandler->getTextureCache().set(0, texture))
-		return;
-	setRenderStates2DMode(color.getAlpha() < 255, true, useAlphaChannelOfTexture);
-
-	Quad2DVertices[0].Color = color;
-	Quad2DVertices[1].Color = color;
-	Quad2DVertices[2].Color = color;
-	Quad2DVertices[3].Color = color;
-
-	Quad2DVertices[0].Pos = core::vector3df((f32)targetRect.UpperLeftCorner.X, (f32)targetRect.UpperLeftCorner.Y, 0.0f);
-	Quad2DVertices[1].Pos = core::vector3df((f32)targetRect.LowerRightCorner.X, (f32)targetRect.UpperLeftCorner.Y, 0.0f);
-	Quad2DVertices[2].Pos = core::vector3df((f32)targetRect.LowerRightCorner.X, (f32)targetRect.LowerRightCorner.Y, 0.0f);
-	Quad2DVertices[3].Pos = core::vector3df((f32)targetRect.UpperLeftCorner.X, (f32)targetRect.LowerRightCorner.Y, 0.0f);
-
-	Quad2DVertices[0].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.UpperLeftCorner.Y);
-	Quad2DVertices[1].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.UpperLeftCorner.Y);
-	Quad2DVertices[2].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.LowerRightCorner.Y);
-	Quad2DVertices[3].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.LowerRightCorner.Y);
-
-	if (!FeatureAvailable[IRR_ARB_vertex_array_bgra] && !FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		getColorBuffer(Quad2DVertices, 4, EVT_STANDARD);
-
-	CacheHandler->setClientState(true, false, true, true);
-
-	glTexCoordPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].TCoords);
-	glVertexPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Pos);
-
-#ifdef GL_BGRA
-	const GLint colorSize = (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra]) ? GL_BGRA : 4;
-#else
-	const GLint colorSize = 4;
-#endif
-	if (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Color);
-	else {
-		_IRR_DEBUG_BREAK_IF(ColorBuffer.size() == 0);
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, 0, &ColorBuffer[0]);
-	}
-
-	glDrawElements(GL_TRIANGLE_FAN, 4, GL_UNSIGNED_SHORT, Quad2DIndices);
+	draw2DImage(texture, targetRect, sourceRect, clipRect, colors, useAlphaChannelOfTexture);
 }
 
 void COpenGLDriver::draw2DImage(const video::ITexture *texture, const core::rect<s32> &destRect,
@@ -1208,6 +1165,18 @@ void COpenGLDriver::draw2DImage(const video::ITexture *texture, const core::rect
 {
 	if (!texture)
 		return;
+
+	if (clipRect) {
+		if (!clipRect->isValid())
+			return;
+
+#if 0
+		glEnable(GL_SCISSOR_TEST);
+		const core::dimension2d<u32> &renderTargetSize = getCurrentRenderTargetSize();
+		glScissor(clipRect->UpperLeftCorner.X, renderTargetSize.Height - clipRect->LowerRightCorner.Y,
+				clipRect->getWidth(), clipRect->getHeight());
+#endif
+	}
 
 	const core::dimension2d<u32> &ss = texture->getOriginalSize();
 	const f32 invW = 1.f / static_cast<f32>(ss.Width);
@@ -1227,62 +1196,36 @@ void COpenGLDriver::draw2DImage(const video::ITexture *texture, const core::rect
 
 	const video::SColor *const useColor = colors ? colors : temp;
 
-	disableTextures(1);
-	if (!CacheHandler->getTextureCache().set(0, texture))
-		return;
-	setRenderStates2DMode(useColor[0].getAlpha() < 255 || useColor[1].getAlpha() < 255 ||
-								  useColor[2].getAlpha() < 255 || useColor[3].getAlpha() < 255,
-			true, useAlphaChannelOfTexture);
+	auto &bd = batch_array[texture];
+	bd.have_alpha = bd.have_alpha || useAlphaChannelOfTexture ||
+			useColor[0].getAlpha() < 255 ||
+			useColor[1].getAlpha() < 255 ||
+			useColor[2].getAlpha() < 255 ||
+			useColor[3].getAlpha() < 255;
 
-	if (clipRect) {
-		if (!clipRect->isValid())
-			return;
+	size_t index;
+	S3DVertex *v = bd.addVertices(4, &index);
+	bd.addIndicesForCWRect(index);
 
-		glEnable(GL_SCISSOR_TEST);
-		const core::dimension2d<u32> &renderTargetSize = getCurrentRenderTargetSize();
-		glScissor(clipRect->UpperLeftCorner.X, renderTargetSize.Height - clipRect->LowerRightCorner.Y,
-				clipRect->getWidth(), clipRect->getHeight());
-	}
+	v[0].Color = useColor[0];
+	v[1].Color = useColor[3];
+	v[2].Color = useColor[2];
+	v[3].Color = useColor[1];
 
-	Quad2DVertices[0].Color = useColor[0];
-	Quad2DVertices[1].Color = useColor[3];
-	Quad2DVertices[2].Color = useColor[2];
-	Quad2DVertices[3].Color = useColor[1];
+	v[0].Pos = { (f32)destRect.UpperLeftCorner.X,  (f32)destRect.UpperLeftCorner.Y,  batch_z };
+	v[1].Pos = { (f32)destRect.LowerRightCorner.X, (f32)destRect.UpperLeftCorner.Y,  batch_z };
+	v[2].Pos = { (f32)destRect.LowerRightCorner.X, (f32)destRect.LowerRightCorner.Y, batch_z };
+	v[3].Pos = { (f32)destRect.UpperLeftCorner.X,  (f32)destRect.LowerRightCorner.Y, batch_z };
 
-	Quad2DVertices[0].Pos = core::vector3df((f32)destRect.UpperLeftCorner.X, (f32)destRect.UpperLeftCorner.Y, 0.0f);
-	Quad2DVertices[1].Pos = core::vector3df((f32)destRect.LowerRightCorner.X, (f32)destRect.UpperLeftCorner.Y, 0.0f);
-	Quad2DVertices[2].Pos = core::vector3df((f32)destRect.LowerRightCorner.X, (f32)destRect.LowerRightCorner.Y, 0.0f);
-	Quad2DVertices[3].Pos = core::vector3df((f32)destRect.UpperLeftCorner.X, (f32)destRect.LowerRightCorner.Y, 0.0f);
+	v[0].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.UpperLeftCorner.Y);
+	v[1].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.UpperLeftCorner.Y);
+	v[2].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.LowerRightCorner.Y);
+	v[3].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.LowerRightCorner.Y);
 
-	Quad2DVertices[0].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.UpperLeftCorner.Y);
-	Quad2DVertices[1].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.UpperLeftCorner.Y);
-	Quad2DVertices[2].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.LowerRightCorner.Y);
-	Quad2DVertices[3].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.LowerRightCorner.Y);
-
-	if (!FeatureAvailable[IRR_ARB_vertex_array_bgra] && !FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		getColorBuffer(Quad2DVertices, 4, EVT_STANDARD);
-
-	CacheHandler->setClientState(true, false, true, true);
-
-	glTexCoordPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].TCoords);
-	glVertexPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Pos);
-
-#ifdef GL_BGRA
-	const GLint colorSize = (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra]) ? GL_BGRA : 4;
-#else
-	const GLint colorSize = 4;
-#endif
-	if (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Color);
-	else {
-		_IRR_DEBUG_BREAK_IF(ColorBuffer.size() == 0);
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, 0, &ColorBuffer[0]);
-	}
-
-	glDrawElements(GL_TRIANGLE_FAN, 4, GL_UNSIGNED_SHORT, Quad2DIndices);
-
+#if 0
 	if (clipRect)
 		glDisable(GL_SCISSOR_TEST);
+#endif
 }
 
 void COpenGLDriver::draw2DImage(const video::ITexture *texture, u32 layer, bool flip)
@@ -1397,35 +1340,9 @@ void COpenGLDriver::draw2DImageBatch(const video::ITexture *texture,
 	const f32 invH = 1.f / static_cast<f32>(ss.Height);
 	const core::dimension2d<u32> &renderTargetSize = getCurrentRenderTargetSize();
 
-	disableTextures(1);
-	if (!CacheHandler->getTextureCache().set(0, texture))
-		return;
-	setRenderStates2DMode(color.getAlpha() < 255, true, useAlphaChannelOfTexture);
+	auto &bd = batch_array[texture];
+	bd.have_alpha = bd.have_alpha || color.getAlpha() < 255 || useAlphaChannelOfTexture;
 
-	Quad2DVertices[0].Color = color;
-	Quad2DVertices[1].Color = color;
-	Quad2DVertices[2].Color = color;
-	Quad2DVertices[3].Color = color;
-
-	if (!FeatureAvailable[IRR_ARB_vertex_array_bgra] && !FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		getColorBuffer(Quad2DVertices, 4, EVT_STANDARD);
-
-	CacheHandler->setClientState(true, false, true, true);
-
-	glTexCoordPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].TCoords);
-	glVertexPointer(2, GL_FLOAT, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Pos);
-
-#ifdef GL_BGRA
-	const GLint colorSize = (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra]) ? GL_BGRA : 4;
-#else
-	const GLint colorSize = 4;
-#endif
-	if (FeatureAvailable[IRR_ARB_vertex_array_bgra] || FeatureAvailable[IRR_EXT_vertex_array_bgra])
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, sizeof(S3DVertex), &(static_cast<const S3DVertex *>(Quad2DVertices))[0].Color);
-	else {
-		_IRR_DEBUG_BREAK_IF(ColorBuffer.size() == 0);
-		glColorPointer(colorSize, GL_UNSIGNED_BYTE, 0, &ColorBuffer[0]);
-	}
 
 	for (u32 i = 0; i < drawCount; ++i) {
 		if (!sourceRects[i].isValid())
@@ -1508,19 +1425,29 @@ void COpenGLDriver::draw2DImageBatch(const video::ITexture *texture,
 				(sourcePos.X + sourceSize.Width) * invW,
 				(sourcePos.Y + sourceSize.Height) * invH);
 
-		const core::rect<s32> poss(targetPos, sourceSize);
+		const core::rect<s32> pos(targetPos, sourceSize);
 
-		Quad2DVertices[0].Pos = core::vector3df((f32)poss.UpperLeftCorner.X, (f32)poss.UpperLeftCorner.Y, 0.0f);
-		Quad2DVertices[1].Pos = core::vector3df((f32)poss.LowerRightCorner.X, (f32)poss.UpperLeftCorner.Y, 0.0f);
-		Quad2DVertices[2].Pos = core::vector3df((f32)poss.LowerRightCorner.X, (f32)poss.LowerRightCorner.Y, 0.0f);
-		Quad2DVertices[3].Pos = core::vector3df((f32)poss.UpperLeftCorner.X, (f32)poss.LowerRightCorner.Y, 0.0f);
+		size_t index;
+		S3DVertex *v = bd.addVertices(4, &index);
+		bd.addIndicesForCWRect(index);
 
-		Quad2DVertices[0].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.UpperLeftCorner.Y);
-		Quad2DVertices[1].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.UpperLeftCorner.Y);
-		Quad2DVertices[2].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.LowerRightCorner.Y);
-		Quad2DVertices[3].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.LowerRightCorner.Y);
+		for (u8 i = 0; i < 4; ++i)
+			v[i].Color = color;
 
-		glDrawElements(GL_TRIANGLE_FAN, 4, GL_UNSIGNED_SHORT, Quad2DIndices);
+		/*
+			0---1
+			| \ |
+			3---2
+		*/
+		v[0].Pos = { (f32)pos.UpperLeftCorner.X,  (f32)pos.UpperLeftCorner.Y,  batch_z };
+		v[1].Pos = { (f32)pos.LowerRightCorner.X, (f32)pos.UpperLeftCorner.Y,  batch_z };
+		v[2].Pos = { (f32)pos.LowerRightCorner.X, (f32)pos.LowerRightCorner.Y, batch_z };
+		v[3].Pos = { (f32)pos.UpperLeftCorner.X,  (f32)pos.LowerRightCorner.Y, batch_z };
+
+		v[0].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.UpperLeftCorner.Y);
+		v[1].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.UpperLeftCorner.Y);
+		v[2].TCoords = core::vector2df(tcoords.LowerRightCorner.X, tcoords.LowerRightCorner.Y);
+		v[3].TCoords = core::vector2df(tcoords.UpperLeftCorner.X, tcoords.LowerRightCorner.Y);
 	}
 }
 
@@ -1544,9 +1471,11 @@ void COpenGLDriver::draw2DRectangle(const core::rect<s32> &position,
 	if (!pos.isValid())
 		return;
 
-	auto &bd = batch_array[scene::EPT_TRIANGLES];
+	auto &bd = batch_array[nullptr];
 	size_t index;
 	S3DVertex *v = bd.addVertices(4, &index);
+	bd.addIndicesForCWRect(index);
+
 	v[0].Color = colorLeftUp;
 	v[1].Color = colorRightUp;
 	v[2].Color = colorRightDown;
@@ -1561,15 +1490,6 @@ void COpenGLDriver::draw2DRectangle(const core::rect<s32> &position,
 	v[1].Pos = { (f32)pos.LowerRightCorner.X, (f32)pos.UpperLeftCorner.Y,  batch_z };
 	v[2].Pos = { (f32)pos.LowerRightCorner.X, (f32)pos.LowerRightCorner.Y, batch_z };
 	v[3].Pos = { (f32)pos.UpperLeftCorner.X,  (f32)pos.LowerRightCorner.Y, batch_z };
-
-	u16 *idx = bd.addIndices(6);
-
-	idx[0] = 0 + index;
-	idx[1] = 1 + index;
-	idx[2] = 2 + index;
-	idx[3] = 0 + index;
-	idx[4] = 2 + index;
-	idx[5] = 3 + index;
 
 	bd.have_alpha = bd.have_alpha ||
 		colorLeftUp.getAlpha() < 255 ||
@@ -2443,7 +2363,7 @@ void COpenGLDriver::setRenderStates2DMode(bool alpha, bool texture, bool alphaCh
 
 			const core::dimension2d<u32> &renderTargetSize = getCurrentRenderTargetSize();
 			core::matrix4 m(core::matrix4::EM4CONST_NOTHING);
-			m.buildProjectionMatrixOrthoLH(f32(renderTargetSize.Width), f32(-(s32)(renderTargetSize.Height)), -1.0f, 1.0f);
+			m.buildProjectionMatrixOrthoLH(f32(renderTargetSize.Width), f32(-(s32)(renderTargetSize.Height)), -1000.0f, 1000.0f);
 			m.setTranslation(core::vector3df(-1, 1, 0));
 			glLoadMatrixf(m.pointer());
 
