@@ -813,6 +813,9 @@ public:
 	/** \return Size of screen or render window. */
 	virtual const core::dimension2d<u32> &getScreenSize() const = 0;
 
+	//! get current render target
+	virtual IRenderTarget *getCurrentRenderTarget() const = 0;
+
 	//! Get the size of the current render target
 	/** This method will return the screen size if the driver
 	doesn't support render to texture, or if the current render

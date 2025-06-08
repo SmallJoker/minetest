@@ -167,6 +167,7 @@ void CGUIEnvironment::drawAll(bool useScreenSize)
 		bringToFront(ToolTip.Element);
 
 	draw();
+
 	OnPostRender(os::Timer::getTime());
 
 	clearDeletionQueue();

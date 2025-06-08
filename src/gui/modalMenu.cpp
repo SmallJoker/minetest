@@ -78,7 +78,32 @@ void GUIModalMenu::draw()
 		regenerateGui(screensize);
 	}
 
-	drawMenu();
+	static video::ITexture *m_cached_texture = nullptr;
+
+	if (1 /* optimization enabled? */) {
+		if (1 /* update needed? */) {
+			if (m_cached_texture)
+				driver->removeTexture(m_cached_texture);
+
+			video::IRenderTarget *target = driver->getCurrentRenderTarget();
+			m_cached_texture = driver->addRenderTargetTexture(screensize);
+			driver->setRenderTarget(m_cached_texture, video::ECBF_COLOR | video::ECBF_DEPTH, video::SColor(0x00000000));
+			drawMenu();
+			driver->setRenderTargetEx(target, video::ECBF_NONE);
+			// ^ video::ECBF_COLOR makes it black
+			// ^ video::ECBF_NONE  blends alpha + color incorrectly
+#if 1
+			// FIXME: for DEBUGGING
+			video::IImage *img = driver->createImage(m_cached_texture, core::vector2di(0,0), m_cached_texture->getOriginalSize());
+			video::SColor c = img->getPixel(234, 570);
+			printf("%08X\n", c.color);
+			img->drop();
+#endif
+		}
+		driver->draw2DImage(m_cached_texture, core::vector2di(0, 0), true);
+	} else {
+		drawMenu();
+	}
 }
 
 /*

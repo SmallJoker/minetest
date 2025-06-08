@@ -184,7 +184,7 @@ public:
 	const core::dimension2d<u32> &getScreenSize() const override;
 
 	//! get current render target
-	IRenderTarget *getCurrentRenderTarget() const;
+	IRenderTarget *getCurrentRenderTarget() const override;
 
 	//! get render target size
 	const core::dimension2d<u32> &getCurrentRenderTargetSize() const override;
