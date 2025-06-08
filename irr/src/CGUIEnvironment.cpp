@@ -52,7 +52,7 @@ CGUIEnvironment::CGUIEnvironment(io::IFileSystem *fs, video::IVideoDriver *drive
 
 	loadBuiltInFont();
 
-	IGUISkin *skin = createSkin();
+	IGUISkin *skin = createSkin(gui::EGST_WINDOWS_METALLIC);
 	setSkin(skin);
 	skin->drop();
 
@@ -584,13 +584,13 @@ void CGUIEnvironment::setSkin(IGUISkin *skin)
 		CurrentSkin->grab();
 }
 
-//! Creates a new GUI Skin.
+//! Creates a new GUI Skin based on a template.
 /** \return Returns a pointer to the created skin.
 If you no longer need the skin, you should call IGUISkin::drop().
 See IReferenceCounted::drop() for more information. */
-IGUISkin *CGUIEnvironment::createSkin()
+IGUISkin *CGUIEnvironment::createSkin(EGUI_SKIN_TYPE type)
 {
-	IGUISkin *skin = new CGUISkin(Driver);
+	IGUISkin *skin = new CGUISkin(type, Driver);
 
 	IGUIFont *builtinfont = getBuiltInFont();
 	IGUIFontBitmap *bitfont = 0;
