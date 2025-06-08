@@ -1484,13 +1484,7 @@ void COpenGL3DriverBase::setRenderStates2DMode(bool alpha, bool texture, bool al
 
 	if (alphaChannel || alpha) {
 		CacheHandler->setBlend(true);
-		// [OpenGL 3+ driver] Attempt to blend differently. This is the nicest looking result so far - and yet - it's wrong.
-		if (Material.getTexture(0) && Material.getTexture(0)->isRenderTarget()) {
-			//CacheHandler->setBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
-			CacheHandler->setBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-		} else {
-			CacheHandler->setBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-		}
+		CacheHandler->setBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 		CacheHandler->setBlendEquation(GL_FUNC_ADD);
 	} else
 		CacheHandler->setBlend(false);

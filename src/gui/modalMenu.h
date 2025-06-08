@@ -13,6 +13,10 @@
 	#include <porting_android.h>
 #endif
 
+namespace irr::video {
+	class ITexture;
+}
+
 struct PointerAction {
 	v2s32 pos;
 	u64 time; // ms
@@ -20,8 +24,6 @@ struct PointerAction {
 	static PointerAction fromEvent(const SEvent &event);
 	bool isRelated(PointerAction other);
 };
-
-class GUIModalMenu;
 
 class IMenuManager
 {
@@ -83,6 +85,7 @@ protected:
 
 private:
 	IMenuManager *m_menumgr;
+	video::ITexture *m_cached_texture = nullptr;
 	/* If true, remap a click outside the formspec to ESC. This is so that, for
 	 * example, touchscreen users can close formspecs.
 	 * The default for this setting is true. Currently, it's set to false for

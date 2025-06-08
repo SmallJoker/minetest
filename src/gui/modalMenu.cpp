@@ -53,6 +53,9 @@ GUIModalMenu::GUIModalMenu(gui::IGUIEnvironment* env, gui::IGUIElement* parent,
 
 GUIModalMenu::~GUIModalMenu()
 {
+	if (m_cached_texture)
+		Environment->getVideoDriver()->removeTexture(m_cached_texture);
+
 	m_menumgr->deletingMenu(this);
 }
 
@@ -77,11 +80,11 @@ void GUIModalMenu::draw()
 		m_screensize_old = screensize;
 		regenerateGui(screensize);
 	}
-
-	static video::ITexture *m_cached_texture = nullptr;
+	static uint32_t counter = 0;
 
 	if (1 /* optimization enabled? */) {
-		if (1 /* update needed? */) {
+		if (++counter > 5 /* update needed? */) {
+			counter = 0;
 			if (m_cached_texture)
 				driver->removeTexture(m_cached_texture);
 
@@ -90,9 +93,7 @@ void GUIModalMenu::draw()
 			driver->setRenderTarget(m_cached_texture, video::ECBF_COLOR | video::ECBF_DEPTH, video::SColor(0x00000000));
 			drawMenu();
 			driver->setRenderTargetEx(target, video::ECBF_NONE);
-			// ^ video::ECBF_COLOR makes it black
-			// ^ video::ECBF_NONE  blends alpha + color incorrectly
-#if 1
+#if 0
 			// FIXME: for DEBUGGING
 			video::IImage *img = driver->createImage(m_cached_texture, core::vector2di(0,0), m_cached_texture->getOriginalSize());
 			video::SColor c = img->getPixel(234, 570);
