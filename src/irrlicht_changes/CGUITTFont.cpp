@@ -458,6 +458,13 @@ void CGUITTFont::setFontHinting(const bool enable, const bool enable_auto_hintin
 	reset_images();
 }
 
+u32 CGUITTFont::setShadowOffset(u32 offset)
+{
+	u32 tmp = shadow_offset;
+	shadow_offset = offset;
+	return tmp;
+}
+
 void CGUITTFont::draw(const core::stringw& text, const core::rect<s32>& position, video::SColor color, bool hcenter, bool vcenter, const core::rect<s32>* clip)
 {
 	// Allow colors to work for strings that have passed through irrlicht by catching

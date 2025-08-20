@@ -21,13 +21,27 @@ class Client;
 class RenderingEngine;
 class WieldMeshSceneNode;
 
+namespace gui {
+	class IGUIFont;
+}
+
+namespace video {
+	class IVideoDriver;
+}
+
+
 struct Nametag
 {
 	scene::ISceneNode *parent_node;
 	std::string text;
 	video::SColor textcolor;
 	std::optional<video::SColor> bgcolor;
+	core::dimension2d<u32> text_size;   //< text dimensions in `texture`
+	video::ITexture *texture = nullptr; //< RTT generated nametag text
 	v3f pos;
+
+	static u32           s_shadow_offset;
+	static video::SColor s_shadow_colors[4];
 
 	Nametag(scene::ISceneNode *a_parent_node,
 			const std::string &text,
@@ -41,6 +55,12 @@ struct Nametag
 		pos(pos)
 	{
 	}
+
+	~Nametag();
+
+	static void initFontShadow();
+
+	bool createTexture();
 
 	video::SColor getBgColor(bool use_fallback) const
 	{

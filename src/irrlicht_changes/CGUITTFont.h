@@ -297,6 +297,10 @@ namespace gui
 			//! \param enable_auto_hinting If true, FreeType uses its own auto-hinting algorithm.  If false, it tries to use the algorithm specified by the font.
 			void setFontHinting(const bool enable, const bool enable_auto_hinting = true);
 
+			//! Changes the shadow offset. 0 to disable
+			//! Returns the previous value.
+			u32 setShadowOffset(u32 offset);
+
 			//! Draws some text and clips it to the specified rectangle if wanted.
 			virtual void draw(const core::stringw& text, const core::rect<s32>& position,
 				video::SColor color, bool hcenter=false, bool vcenter=false,

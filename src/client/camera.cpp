@@ -38,6 +38,81 @@ static const char *setting_names[] = {
 	"show_nametag_backgrounds",
 };
 
+Nametag::~Nametag()
+{
+	if (texture)
+		RenderingEngine::get_video_driver()->removeTexture(texture);
+}
+
+u32           Nametag::s_shadow_offset = 0;
+video::SColor Nametag::s_shadow_colors[4] { 0, 0, 0, 0 };
+
+void Nametag::initFontShadow()
+{
+	// See also: `FontEngine::initFont`
+	u16 font_shadow       = 0;
+	u16 font_shadow_alpha = 0;
+	g_settings->getU16NoEx("font_shadow", font_shadow);
+	g_settings->getU16NoEx("font_shadow_alpha", font_shadow_alpha);
+
+	// Texture multiplier
+	video::SColor shadow_color = video::SColor(font_shadow_alpha, 0, 0, 0);
+
+	for (size_t i = 0; i < ARRLEN(s_shadow_colors); ++i)
+		s_shadow_colors[i] = shadow_color;
+	s_shadow_offset = font_shadow;
+}
+
+static const u32 NAMETAG_FONT_SCALE = 4;
+
+bool Nametag::createTexture()
+{
+	if (texture)
+		return true;
+
+	u32 font_size = g_fontengine->getFontSize(FM_Unspecified);
+	gui::IGUIFont *font = g_fontengine->getFont(font_size * NAMETAG_FONT_SCALE);
+	if (!font)
+		return false;
+
+	video::IVideoDriver *driver = RenderingEngine::get_video_driver();
+
+	std::wstring textw = unescape_translate(utf8_to_wide(text));
+	core::dimension2d<u32> dim = font->getDimension(textw.c_str());
+	this->text_size = dim;
+
+	// 1. Add some padding for mip-mapping
+	// 2. Align to a power of 2 (desired by render target)
+	dim.Width  = npot2(dim.Width  + 4);
+	dim.Height = npot2(dim.Height + 4);
+
+	auto out_tex = driver->addRenderTargetTexture(dim, "rt", video::ECF_A8R8G8B8);
+	if (!driver->setRenderTarget(out_tex, true, true, video::SColor(0)))
+		return false;
+
+	{
+		gui::CGUITTFont *cfont = (font->getType() == gui::EGFT_CUSTOM) ?
+			(gui::CGUITTFont *)font : nullptr;
+		u32 shadow_offset = 0;
+
+		// Temporarily disable shadow
+		if (cfont)
+			shadow_offset = cfont->setShadowOffset(0);
+
+		// Inside RTT: draw white letters (by default)
+		core::vector2di padding(dim.Width - text_size.Width, dim.Height - text_size.Height);
+		font->draw(textw.c_str(), core::recti(padding / 2, dim), textcolor);
+
+		// Restore previous shadow
+		if (cfont)
+			cfont->setShadowOffset(shadow_offset);
+	}
+	driver->setRenderTarget(nullptr, video::ECBF_ALL);
+	this->texture = out_tex;
+	return true;
+}
+
+
 Camera::Camera(MapDrawControl &draw_control, Client *client, RenderingEngine *rendering_engine):
 	m_draw_control(draw_control),
 	m_client(client),
@@ -60,6 +135,7 @@ Camera::Camera(MapDrawControl &draw_control, Client *client, RenderingEngine *re
 	m_wieldnode->drop(); // m_wieldmgr grabbed it
 
 	m_nametags.clear();
+	Nametag::initFontShadow();
 
 	readSettings();
 	for (auto name : setting_names)
@@ -631,9 +707,17 @@ void Camera::drawNametags()
 	core::matrix4 trans = m_cameranode->getProjectionMatrix();
 	trans *= m_cameranode->getViewMatrix();
 
-	gui::IGUIFont *font = g_fontengine->getFont();
 	video::IVideoDriver *driver = RenderingEngine::get_video_driver();
 	v2u32 screensize = driver->getScreenSize();
+
+	auto get_center_rect = [](const core::dimension2d<u32> dim) -> core::recti {
+		const core::vector2di half(dim.Width / 2, dim.Height / 2);
+		return core::recti(
+			// Do not use "-half" --> Integer division truncation.
+			half.X - dim.Width, half.Y - dim.Height,
+			half.X, half.Y
+		);
+	};
 
 	for (const Nametag *nametag : m_nametags) {
 		// Nametags are hidden in GenericCAO::updateNametag()
@@ -641,30 +725,59 @@ void Camera::drawNametags()
 		v3f pos = nametag->parent_node->getAbsolutePosition() + nametag->pos * BS;
 		f32 transformed_pos[4] = { pos.X, pos.Y, pos.Z, 1.0f };
 		trans.multiplyWith1x4Matrix(transformed_pos);
-		if (transformed_pos[3] > 0) {
-			std::wstring nametag_colorless =
-				unescape_translate(utf8_to_wide(nametag->text));
-			core::dimension2d<u32> textsize = font->getDimension(
-				nametag_colorless.c_str());
-			f32 zDiv = transformed_pos[3] == 0.0f ? 1.0f :
-				core::reciprocal(transformed_pos[3]);
-			v2s32 screen_pos;
-			screen_pos.X = screensize.X *
-				(0.5 * transformed_pos[0] * zDiv + 0.5) - textsize.Width / 2;
-			screen_pos.Y = screensize.Y *
-				(0.5 - transformed_pos[1] * zDiv * 0.5) - textsize.Height / 2;
-			core::rect<s32> size(0, 0, textsize.Width, textsize.Height);
+		if (transformed_pos[3] <= 0) // negative Z means behind camera
+			continue;
 
-			auto bgcolor = nametag->getBgColor(m_show_nametag_backgrounds);
-			if (bgcolor.getAlpha() != 0) {
-				core::rect<s32> bg_size(-2, 0, textsize.Width + 2, textsize.Height);
-				driver->draw2DRectangle(bgcolor, bg_size + screen_pos);
-			}
-
-			font->draw(
-				translate_string(utf8_to_wide(nametag->text)).c_str(),
-				size + screen_pos, nametag->textcolor);
+		if (!nametag->texture) {
+			// Cannot draw.
+			continue;
 		}
+		const f32 zDiv = transformed_pos[3] == 0.0f ? 1.0f :
+			core::reciprocal(transformed_pos[3]);
+
+		// Allow 20% larger
+		const f32 scale = std::min(1.2f, 2.0f * BS * zDiv) / NAMETAG_FONT_SCALE;
+		if (scale < 0.01f)
+			continue;
+
+		const core::dimension2d<u32>
+			nt_text_size = nametag->text_size,
+			nt_tex_size = nametag->texture->getSize();
+
+		// Scaled texture size
+		core::dimension2d<u32> tex_size(
+			nt_tex_size.Width  * scale + 0.5f, nt_tex_size.Height  * scale + 0.5f
+		);
+		// Scaled size of the text within `texture`
+		core::dimension2d<u32> text_size(
+			nt_text_size.Width * scale + 0.5f, nt_text_size.Height * scale + 0.5f
+		);
+
+		v2s32 screen_pos; // center point of the target
+		screen_pos.X = screensize.X * (0.5f * transformed_pos[0] * zDiv + 0.5f);
+		screen_pos.Y = screensize.Y * (0.5f - transformed_pos[1] * zDiv * 0.5f);
+
+		// Draw a background to see the nametag more clearly
+		auto bgcolor = nametag->getBgColor(m_show_nametag_backgrounds);
+		if (bgcolor.getAlpha() != 0) {
+			// TODO: This rectangle appears to get clipped by in-world nodes. Why?
+			core::rect<s32> bg_size = get_center_rect({text_size.Width + 4, text_size.Height});
+			driver->draw2DRectangle(bgcolor, bg_size + screen_pos);
+		}
+
+		const core::rect<s32> src_rect(core::vector2di(), nt_tex_size);
+		core::rect<s32> dst_rect = get_center_rect(tex_size) + screen_pos;
+		if (Nametag::s_shadow_offset > 0) {
+			// Draw the name shadow by colorizing the texture (black, varying alpha)
+			const core::vector2di offset(Nametag::s_shadow_offset, Nametag::s_shadow_offset);
+			dst_rect += offset;
+			driver->draw2DImage(nametag->texture, dst_rect, src_rect,
+				nullptr, Nametag::s_shadow_colors, true);
+			dst_rect -= offset;
+		}
+		// Draw the regular nametag on top of the shadow
+		driver->draw2DImage(nametag->texture, dst_rect, src_rect,
+			nullptr, nullptr, true);
 	}
 }
 
@@ -674,6 +787,10 @@ Nametag *Camera::addNametag(scene::ISceneNode *parent_node,
 {
 	Nametag *nametag = new Nametag(parent_node, text, textcolor, bgcolor, pos);
 	m_nametags.push_back(nametag);
+
+	if (!nametag->createTexture()) {
+		warningstream << "Failed to generate nametag for '" << text << "'." << std::endl;
+	}
 	return nametag;
 }
 
