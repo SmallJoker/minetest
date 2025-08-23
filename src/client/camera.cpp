@@ -86,8 +86,14 @@ bool Nametag::createTexture()
 	dim.Width  = npot2(dim.Width  + 4);
 	dim.Height = npot2(dim.Height + 4);
 
-	auto out_tex = driver->addRenderTargetTexture(dim, "rt", video::ECF_A8R8G8B8);
-	if (!driver->setRenderTarget(out_tex, true, true, video::SColor(0)))
+	const bool mip_maps_previous = driver->getTextureCreationFlag(video::ETCF_CREATE_MIP_MAPS);
+	// enable mip-mapping
+	driver->setTextureCreationFlag(video::ETCF_CREATE_MIP_MAPS, true);
+	auto out_tex = driver->addRenderTargetTexture(dim, "nametag_" + text, video::ECF_A8R8G8B8);
+	// restore previous value
+	driver->setTextureCreationFlag(video::ETCF_CREATE_MIP_MAPS, mip_maps_previous);
+
+	if (!driver->setRenderTarget(out_tex, true, true, video::SColor(0x00FFFFFF)))
 		return false;
 
 	{
@@ -735,9 +741,8 @@ void Camera::drawNametags()
 		const f32 zDiv = transformed_pos[3] == 0.0f ? 1.0f :
 			core::reciprocal(transformed_pos[3]);
 
-		// Allow 20% larger
-		const f32 scale = std::min(1.2f, 2.0f * BS * zDiv) / NAMETAG_FONT_SCALE;
-		if (scale < 0.01f)
+		const f32 scale = std::min(1.0f, 10.0f * BS * zDiv) / NAMETAG_FONT_SCALE;
+		if (scale < (0.1f / NAMETAG_FONT_SCALE))
 			continue;
 
 		const core::dimension2d<u32>
@@ -760,7 +765,6 @@ void Camera::drawNametags()
 		// Draw a background to see the nametag more clearly
 		auto bgcolor = nametag->getBgColor(m_show_nametag_backgrounds);
 		if (bgcolor.getAlpha() != 0) {
-			// TODO: This rectangle appears to get clipped by in-world nodes. Why?
 			core::rect<s32> bg_size = get_center_rect({text_size.Width + 4, text_size.Height});
 			driver->draw2DRectangle(bgcolor, bg_size + screen_pos);
 		}

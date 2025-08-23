@@ -84,7 +84,7 @@ CNullDriver::CNullDriver(io::IFileSystem *io, const core::dimension2d<u32> &scre
 	InitMaterial2D.AntiAliasing = video::EAAM_OFF;
 	InitMaterial2D.ZWriteEnable = video::EZW_OFF;
 	InitMaterial2D.ZBuffer = video::ECFN_DISABLED;
-	InitMaterial2D.UseMipMaps = false;
+	InitMaterial2D.UseMipMaps = true;
 	InitMaterial2D.forEachTexture([](auto &tex) {
 		tex.MinFilter = video::ETMINF_NEAREST_MIPMAP_NEAREST;
 		tex.MagFilter = video::ETMAGF_NEAREST;
