@@ -77,17 +77,17 @@ public:
 	}
 
 	// Returns true to prevent further processing
-	virtual bool preprocessEvent(const SEvent& event)
+	bool runPreprocessEvent(const SEvent &event)
 	{
-		if (m_stack.empty())
-			return false;
-
 		if (event.EventType == EET_KEY_INPUT_EVENT) {
 			bool ret = event.KeyInput.Key == m_inhibited_key && m_inhibited_key != KEY_UNKNOWN;
 			m_inhibited_key = KEY_UNKNOWN;
 			if (ret)
 				return true;
 		}
+
+		if (m_stack.empty())
+			return false;
 
 		GUIModalMenu *mm = dynamic_cast<GUIModalMenu*>(m_stack.back());
 		return mm && mm->preprocessEvent(event);
